@@ -10,7 +10,10 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use vm_curator::config::Config;
-use vm_curator::vm::{discover_vms, launch_vm_with_error_check, DiscoveredVm, LaunchOptions, BootMode};
+use vm_curator::vm::{
+    detect_qemu_processes, discover_vms, launch_vm_with_error_check, BootMode, DiscoveredVm,
+    LaunchOptions,
+};
 
 pub fn build_and_show(app: &libadwaita::Application) {
     let config = Config::load().unwrap_or_default();
@@ -20,17 +23,26 @@ pub fn build_and_show(app: &libadwaita::Application) {
 
     let selected: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
 
+    // PID of the running QEMU process for each VM, or None if not running.
+    // Indexed in sync with `vms`.
+    let running_pids: Rc<RefCell<Vec<Option<u32>>>> =
+        Rc::new(RefCell::new(vec![None; vms.len()]));
+
     // --- Left panel: VM list ---
     let list_box = gtk4::ListBox::new();
     list_box.set_selection_mode(SelectionMode::Single);
     list_box.add_css_class("navigation-sidebar");
 
+    // Keep handles to every row so the detection timer can update their subtitles.
+    let mut rows_vec: Vec<ActionRow> = Vec::with_capacity(vms.len());
     for vm in vms.iter() {
         let row = ActionRow::new();
         row.set_title(&vm.display_name());
         row.set_subtitle(&vm.id);
         list_box.append(&row);
+        rows_vec.push(row);
     }
+    let rows: Rc<Vec<ActionRow>> = Rc::new(rows_vec);
 
     if vms.is_empty() {
         let placeholder = Label::new(Some("No VMs found.\nConfigure vm-curator first."));
@@ -75,10 +87,11 @@ pub fn build_and_show(app: &libadwaita::Application) {
     right_panel.append(&detail_label);
     right_panel.append(&launch_button);
 
-    // --- Wire list selection to detail panel ---
+    // --- Wire list selection ---
     {
         let vms = Rc::clone(&vms);
         let selected = Rc::clone(&selected);
+        let running_pids = Rc::clone(&running_pids);
         let detail_label = detail_label.clone();
         let launch_button = launch_button.clone();
 
@@ -100,18 +113,22 @@ pub fn build_and_show(app: &libadwaita::Application) {
                 ));
                 detail_label.set_use_markup(true);
                 detail_label.remove_css_class("dim-label");
-                launch_button.set_sensitive(true);
+
+                let is_running = running_pids.borrow()[idx].is_some();
+                launch_button.set_sensitive(!is_running);
+                launch_button.set_label(if is_running { "Running" } else { "Launch VM" });
             } else {
                 *selected.borrow_mut() = None;
                 detail_label.set_label("Select a VM from the list.");
                 detail_label.set_use_markup(false);
                 detail_label.add_css_class("dim-label");
                 launch_button.set_sensitive(false);
+                launch_button.set_label("Launch VM");
             }
         });
     }
 
-    // --- Toast overlay (wraps main content, surfaces launch results) ---
+    // --- Toast overlay ---
     let toast_overlay = ToastOverlay::new();
 
     // --- Wire launch button ---
@@ -132,7 +149,6 @@ pub fn build_and_show(app: &libadwaita::Application) {
             btn.set_sensitive(false);
             btn.set_label("Launching…");
 
-            // Channel carries (vm_name, success, error_message)
             let (tx, rx) = mpsc::channel::<(String, bool, Option<String>)>();
             let rx = Rc::new(RefCell::new(rx));
 
@@ -151,13 +167,13 @@ pub fn build_and_show(app: &libadwaita::Application) {
             glib::timeout_add_local(Duration::from_millis(200), move || {
                 match rx.borrow().try_recv() {
                     Ok((vm_name, success, error)) => {
-                        launch_button_poll.set_sensitive(true);
-                        launch_button_poll.set_label("Launch VM");
+                        // Running-state badge will update on the next detection tick;
+                        // only restore the button here if the launch failed.
                         if success {
-                            toast_overlay_poll.add_toast(
-                                Toast::new(&format!("{vm_name} launched")),
-                            );
+                            toast_overlay_poll.add_toast(Toast::new(&format!("{vm_name} launched")));
                         } else {
+                            launch_button_poll.set_sensitive(true);
+                            launch_button_poll.set_label("Launch VM");
                             let msg = error.as_deref().unwrap_or("unknown error");
                             let toast = Toast::builder()
                                 .title(&format!("Failed to launch {vm_name}: {msg}"))
@@ -175,6 +191,45 @@ pub fn build_and_show(app: &libadwaita::Application) {
                     }
                 }
             });
+        });
+    }
+
+    // --- Running VM detection (every 3 s) ---
+    {
+        let vms = Rc::clone(&vms);
+        let rows = Rc::clone(&rows);
+        let running_pids = Rc::clone(&running_pids);
+        let selected = Rc::clone(&selected);
+        let launch_button = launch_button.clone();
+
+        glib::timeout_add_seconds_local(3, move || {
+            let processes = detect_qemu_processes();
+            let mut pids = running_pids.borrow_mut();
+
+            for (i, vm) in vms.iter().enumerate() {
+                let new_pid = processes
+                    .iter()
+                    .find(|p| p.cwd.as_deref() == Some(vm.path.as_path()))
+                    .map(|p| p.pid);
+
+                if new_pid != pids[i] {
+                    pids[i] = new_pid;
+
+                    if let Some(pid) = new_pid {
+                        rows[i].set_subtitle(&format!("Running  ·  PID {pid}"));
+                    } else {
+                        rows[i].set_subtitle(&vm.id);
+                    }
+
+                    // Keep the launch button consistent with the selected VM's new state.
+                    if selected.borrow().as_ref() == Some(&i) {
+                        launch_button.set_sensitive(new_pid.is_none());
+                        launch_button.set_label(if new_pid.is_some() { "Running" } else { "Launch VM" });
+                    }
+                }
+            }
+
+            glib::ControlFlow::Continue
         });
     }
 
