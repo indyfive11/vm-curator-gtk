@@ -1,0 +1,10 @@
+[package]
+name = "vm-curator-gtk"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vm_curator = { git = "https://github.com/indyfive11/vm-curator", branch = "main", package = "vm-curator" }
+gtk4 = { version = "0.11", features = ["v4_18"] }
+libadwaita = { version = "0.9", features = ["v1_9"] }
+anyhow = "1.0"
