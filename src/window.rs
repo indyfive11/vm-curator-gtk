@@ -3,7 +3,7 @@ use libadwaita::prelude::*;
 use gtk4::{
     glib, Box as GtkBox, Button, Label, Orientation, Paned, ScrolledWindow, SelectionMode,
 };
-use libadwaita::{ActionRow, ApplicationWindow, HeaderBar, ToolbarView};
+use libadwaita::{ActionRow, ApplicationWindow, HeaderBar, Toast, ToastOverlay, ToolbarView};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -111,10 +111,14 @@ pub fn build_and_show(app: &libadwaita::Application) {
         });
     }
 
+    // --- Toast overlay (wraps main content, surfaces launch results) ---
+    let toast_overlay = ToastOverlay::new();
+
     // --- Wire launch button ---
     {
         let vms = Rc::clone(&vms);
         let selected = Rc::clone(&selected);
+        let toast_overlay = toast_overlay.clone();
 
         launch_button.connect_clicked(move |btn| {
             let idx = match *selected.borrow() {
@@ -128,8 +132,8 @@ pub fn build_and_show(app: &libadwaita::Application) {
             btn.set_sensitive(false);
             btn.set_label("Launching…");
 
-            // mpsc channel: thread sends result, main-thread timeout polls for it
-            let (tx, rx) = mpsc::channel::<(String, bool)>();
+            // Channel carries (vm_name, success, error_message)
+            let (tx, rx) = mpsc::channel::<(String, bool, Option<String>)>();
             let rx = Rc::new(RefCell::new(rx));
 
             std::thread::spawn(move || {
@@ -139,18 +143,27 @@ pub fn build_and_show(app: &libadwaita::Application) {
                     usb_devices: Vec::new(),
                 };
                 let result = launch_vm_with_error_check(&vm, &options);
-                tx.send((result.vm_name, result.success)).ok();
+                tx.send((result.vm_name, result.success, result.error)).ok();
             });
 
-            // Poll every 200ms; stop polling once the result arrives
             let launch_button_poll = btn.clone();
+            let toast_overlay_poll = toast_overlay.clone();
             glib::timeout_add_local(Duration::from_millis(200), move || {
                 match rx.borrow().try_recv() {
-                    Ok((vm_name, success)) => {
+                    Ok((vm_name, success, error)) => {
                         launch_button_poll.set_sensitive(true);
                         launch_button_poll.set_label("Launch VM");
-                        if !success {
-                            eprintln!("Launch failed for {vm_name}");
+                        if success {
+                            toast_overlay_poll.add_toast(
+                                Toast::new(&format!("{vm_name} launched")),
+                            );
+                        } else {
+                            let msg = error.as_deref().unwrap_or("unknown error");
+                            let toast = Toast::builder()
+                                .title(&format!("Failed to launch {vm_name}: {msg}"))
+                                .timeout(0)
+                                .build();
+                            toast_overlay_poll.add_toast(toast);
                         }
                         glib::ControlFlow::Break
                     }
@@ -173,9 +186,11 @@ pub fn build_and_show(app: &libadwaita::Application) {
     paned.set_shrink_start_child(false);
     paned.set_shrink_end_child(false);
 
+    toast_overlay.set_child(Some(&paned));
+
     let toolbar_view = ToolbarView::new();
     toolbar_view.add_top_bar(&HeaderBar::new());
-    toolbar_view.set_content(Some(&paned));
+    toolbar_view.set_content(Some(&toast_overlay));
 
     let window = ApplicationWindow::builder()
         .application(app)
