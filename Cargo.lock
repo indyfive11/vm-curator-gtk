@@ -2257,7 +2257,6 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vm-curator"
 version = "0.4.10"
-source = "git+https://github.com/indyfive11/vm-curator?branch=main#63b006b20edd1d926eb3bacaece298117b023327"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2266,6 +2265,7 @@ dependencies = [
  "dirs",
  "include_dir",
  "libudev",
+ "log",
  "nom 8.0.0",
  "once_cell",
  "quick-xml",
@@ -2282,8 +2282,10 @@ name = "vm-curator-gtk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dirs",
  "gtk4",
  "libadwaita",
+ "log",
  "vm-curator",
 ]
 
