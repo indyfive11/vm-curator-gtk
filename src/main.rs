@@ -10,7 +10,9 @@ mod multi_gpu;
 mod pci_dialog;
 mod settings;
 mod single_gpu;
+mod overlay;
 mod snapshot;
+mod vm_window;
 mod usb_dialog;
 mod window;
 

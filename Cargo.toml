@@ -1,6 +1,6 @@
 [package]
 name = "vm-curator-gtk"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
@@ -10,3 +10,10 @@ libadwaita = { version = "0.9", features = ["v1_9"] }
 anyhow = "1.0"
 log = { version = "0.4", features = ["std"] }
 dirs = "6.0"
+gtk4-layer-shell = { version = "0.8", features = ["v1_3"] }
+qemu-display = { git = "https://gitlab.com/marcandre.lureau/qemu-display", package = "qemu-display" }
+libc = "0.2"
+async-channel = "2"
+async-std = "1"
+async-trait = "0.1"
+keycodemap = { git = "https://gitlab.com/marcandre.lureau/qemu-display", package = "keycodemap" }

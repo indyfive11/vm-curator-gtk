@@ -16,10 +16,11 @@ use std::time::Duration;
 use vm_curator::config::Config;
 use vm_curator::vm::{
     delete_vm, detect_qemu_processes, discover_vms, ensure_qmp_in_script,
-    force_stop_vm, is_vm_paused, launch_vm_with_error_check, pause_vm,
-    rename_vm, reset_vm, resume_vm, stop_vm_by_pid,
+    force_stop_vm, is_vm_paused, launch_vm_dbus,
+    pause_vm, rename_vm, reset_vm, resume_vm, stop_vm_by_pid,
     BootMode, DiscoveredVm, LaunchOptions,
 };
+
 
 pub fn build_and_show(app: &libadwaita::Application) {
     let config: Rc<RefCell<Config>> =
@@ -31,6 +32,8 @@ pub fn build_and_show(app: &libadwaita::Application) {
     let running_pids: Rc<RefCell<Vec<Option<u32>>>> = Rc::new(RefCell::new(Vec::new()));
     let vm_paused: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
     let rows: Rc<RefCell<Vec<ActionRow>>> = Rc::new(RefCell::new(Vec::new()));
+    let embedded_paths: Rc<RefCell<std::collections::HashSet<std::path::PathBuf>>> =
+        Rc::new(RefCell::new(std::collections::HashSet::new()));
 
     // --- Left panel ---
     let list_box = gtk4::ListBox::new();
@@ -314,60 +317,50 @@ pub fn build_and_show(app: &libadwaita::Application) {
     let do_launch: Rc<dyn Fn(DiscoveredVm, LaunchOptions)> = {
         let toast_overlay = toast_overlay.clone();
         let launch_btn = launch_btn.clone();
-        Rc::new(move |vm: DiscoveredVm, options: LaunchOptions| {
+        let app = app.clone();
+        let embedded_paths = Rc::clone(&embedded_paths);
+        Rc::new(move |vm: DiscoveredVm, _options: LaunchOptions| {
             launch_btn.set_sensitive(false);
             launch_btn.set_label("Launching…");
 
-            // Ensure QMP socket is present in the launch script (idempotent)
             if let Err(e) = ensure_qmp_in_script(&vm.path) {
                 log::warn!("Could not ensure QMP in launch script for {}: {}", vm.display_name(), e);
             }
 
-            // Detect SPICE mode before moving vm into the thread
-            let is_spice = std::fs::read_to_string(&vm.launch_script)
-                .map(|s| s.contains("spice.sock"))
-                .unwrap_or(false);
-            let spice_sock_path = vm.path.join("spice.sock");
+            let vm_name = vm.display_name();
+            let vm_for_thread = vm.clone();
 
-            let (tx, rx) = mpsc::channel::<(String, bool, Option<String>)>();
+            let (tx, rx) = mpsc::channel::<Result<u32, String>>();
             let rx = Rc::new(RefCell::new(rx));
             std::thread::spawn(move || {
-                let result = launch_vm_with_error_check(&vm, &options);
-                tx.send((result.vm_name, result.success, result.error)).ok();
+                match launch_vm_dbus(&vm_for_thread) {
+                    Ok(pid) => { let _ = tx.send(Ok(pid)); }
+                    Err(e) => { let _ = tx.send(Err(e.to_string())); }
+                }
             });
 
             let launch_btn = launch_btn.clone();
             let toast_overlay = toast_overlay.clone();
+            let app = app.clone();
+            let embedded_paths = Rc::clone(&embedded_paths);
             glib::timeout_add_local(Duration::from_millis(200), move || {
                 match rx.borrow().try_recv() {
-                    Ok((vm_name, success, error)) => {
-                        if success {
-                            if is_spice {
-                                let sock = spice_sock_path.clone();
-                                std::thread::spawn(move || {
-                                    std::thread::sleep(Duration::from_secs(2));
-                                    let _ = std::process::Command::new("remote-viewer")
-                                        .arg(format!("spice+unix://{}", sock.display()))
-                                        .spawn();
-                                });
-                                toast_overlay.add_toast(Toast::new(
-                                    &format!("{vm_name} launched — opening SPICE viewer…"),
-                                ));
-                            } else {
-                                toast_overlay
-                                    .add_toast(Toast::new(&format!("{vm_name} launched")));
-                            }
-                        } else {
-                            launch_btn.set_sensitive(true);
-                            launch_btn.set_label("Launch VM");
-                            let msg = error.as_deref().unwrap_or("unknown error");
-                            toast_overlay.add_toast(
-                                Toast::builder()
-                                    .title(&format!("Failed to launch {vm_name}: {msg}"))
-                                    .timeout(0)
-                                    .build(),
-                            );
-                        }
+                    Ok(Ok(_bash_pid)) => {
+                        launch_btn.set_sensitive(true);
+                        launch_btn.set_label("Running");
+                        embedded_paths.borrow_mut().insert(vm.path.clone());
+                        crate::vm_window::show(&app, vm.clone());
+                        glib::ControlFlow::Break
+                    }
+                    Ok(Err(msg)) => {
+                        launch_btn.set_sensitive(true);
+                        launch_btn.set_label("Launch VM");
+                        toast_overlay.add_toast(
+                            Toast::builder()
+                                .title(&format!("Failed to launch {vm_name}: {msg}"))
+                                .timeout(0)
+                                .build(),
+                        );
                         glib::ControlFlow::Break
                     }
                     Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
@@ -958,6 +951,7 @@ pub fn build_and_show(app: &libadwaita::Application) {
         let running_pids = Rc::clone(&running_pids);
         let vm_paused = Rc::clone(&vm_paused);
         let selected = Rc::clone(&selected);
+        let embedded_paths = Rc::clone(&embedded_paths);
         let launch_btn = launch_btn.clone();
         let stop_btn = stop_btn.clone();
         let pause_btn = pause_btn.clone();
@@ -977,8 +971,9 @@ pub fn build_and_show(app: &libadwaita::Application) {
                     .iter()
                     .find(|p| p.cwd.as_deref() == Some(vm.path.as_path()))
                     .map(|p| p.pid);
+                let old_pid = pids[i];
 
-                if new_pid != pids[i] {
+                if new_pid != old_pid {
                     pids[i] = new_pid;
                     if let Some(pid) = new_pid {
                         rows[i].set_subtitle(&format!("Running  ·  PID {pid}"));
@@ -990,6 +985,14 @@ pub fn build_and_show(app: &libadwaita::Application) {
                         launch_btn.set_label(if new_pid.is_some() { "Running" } else { "Launch VM" });
                         stop_btn.set_sensitive(new_pid.is_some());
                         force_stop_btn.set_sensitive(new_pid.is_some());
+                    }
+                    // Spawn overlay only for externally-started VMs (not ones we launched)
+                    if old_pid.is_none() {
+                        if let Some(pid) = new_pid {
+                            if !embedded_paths.borrow().contains(&vm.path) {
+                                crate::overlay::show(vm.clone(), pid);
+                            }
+                        }
                     }
                 }
             }
