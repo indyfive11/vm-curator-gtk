@@ -2849,7 +2849,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vm-curator"
-version = "0.4.10"
+version = "0.4.11"
+source = "git+https://github.com/indyfive11/vm-curator?tag=v0.4.11#bfc4693c577428852a93cb202b02d1cbe24c7a30"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2872,7 +2873,7 @@ dependencies = [
 
 [[package]]
 name = "vm-curator-gtk"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",

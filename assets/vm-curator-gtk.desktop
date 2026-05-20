@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=VM Curator
+GenericName=Virtual Machine Manager
+Comment=Manage QEMU/KVM virtual machines
+Exec=vm-curator-gtk
+Icon=vm-curator-gtk
+Terminal=false
+Type=Application
+Categories=System;Emulator;
+Keywords=qemu;kvm;virtual machine;vm;
